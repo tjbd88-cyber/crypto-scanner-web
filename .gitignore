@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+venv/
 .env
 .env.*
 *.key
@@ -8,3 +9,4 @@ __pycache__/
 *.log
 .pytest_cache/
 data/
+.DS_Store

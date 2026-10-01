@@ -81,6 +81,11 @@ def health():
     return {'ok': True}
 
 
+@app.get('/health')
+def public_health():
+    return {'status': 'ok'}
+
+
 @app.get('/api/task')
 def get_task():
     return task or {'status':'idle','results':[],'errors':[],'done':0,'total':0}
