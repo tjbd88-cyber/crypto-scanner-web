@@ -19,6 +19,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8911
 
 ## 公网部署与自动更新
 
+已部署网站：[https://crypto-scanner-web-bzds.onrender.com](https://crypto-scanner-web-bzds.onrender.com)。Render 免费实例在空闲后会休眠，首次访问可能需要等待启动。
+
 项目是 FastAPI 服务，使用仓库根目录的 `render.yaml` 在 Render 创建 Python Web Service，`.python-version` 指定 Python 3.11。生产启动命令是 `python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT`；Render 向 `GET /health` 发健康检查，不会因此请求交易所。页面中的 API 请求均使用同源相对路径，部署时不需要修改前端网址，也不需要交易所 API Key。
 
 首次部署需要在 Render 控制台连接此 GitHub 仓库，从 `main` 的 `render.yaml` 创建 Blueprint。之后向 `main` 更新代码会触发 `.github/workflows/test.yml` 中的 Python 3.11 测试；Render 配置为 **GitHub 检查通过后自动部署**。只把测试通过的提交作为有效更新。
