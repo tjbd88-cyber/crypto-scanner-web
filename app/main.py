@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
+import math
+from collections import OrderedDict
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,7 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
-from app.exchanges.base import PublicHttp
+from app.exchanges.base import PublicHttp, RateLimitError
 from app.exchanges.binance import BinanceExchange
 from app.exchanges.gate import GateExchange
 from app.exchanges.okx import OKXExchange
@@ -28,6 +32,9 @@ PERIODS = ('15m','30m','1h','2h','4h','6h','8h','12h','1d','2d','3d','5d','1w')
 EXCHANGES = {'binance': BinanceExchange, 'okx': OKXExchange, 'gate': GateExchange}
 STATIC = Path(__file__).resolve().parent.parent / 'static'
 STATE = Path(__file__).resolve().parent.parent / 'data' / 'last_task.json'
+SCAN_COOLDOWN_SECONDS = 60
+CHART_CACHE_LIMIT = 64
+logger = logging.getLogger(__name__)
 
 
 class ScanOptions(BaseModel):
@@ -35,6 +42,7 @@ class ScanOptions(BaseModel):
     markets: list[str] = ['spot']
     periods: list[str] = ['4h']
     min_previous_day_turnover: float = Field(default=10_000_000, ge=0)
+    max_symbols: int | None = Field(default=None, ge=1, le=100)
 
     @model_validator(mode='after')
     def valid(self):
@@ -44,17 +52,31 @@ class ScanOptions(BaseModel):
             raise ValueError('请选择现货或永续')
         if not self.periods or any(x not in PERIODS for x in self.periods):
             raise ValueError('请选择有效周期')
-        if len(set(self.periods)) != len(self.periods):
-            raise ValueError('周期不能重复')
+        if any(len(set(values)) != len(values) for values in (self.exchanges, self.markets, self.periods)):
+            raise ValueError('交易所、市场和周期不能重复')
         return self
 
 
-app = FastAPI(title='底部双转换选币器')
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    # Scan and chart requests share one host limiter and a bounded cache for this process.
+    async with httpx.AsyncClient(headers={'User-Agent':'BottomReversalScanner/1.0','Accept':'application/json'},
+                                 timeout=15, limits=httpx.Limits(max_connections=12, max_keepalive_connections=8)) as client:
+        application.state.http = PublicHttp(client)
+        try:
+            yield
+        finally:
+            if scan_runner and not scan_runner.done():
+                scan_runner.cancel()
+                await asyncio.gather(scan_runner, return_exceptions=True)
+
+
+app = FastAPI(title='底部双转换选币器', lifespan=lifespan)
 app.mount('/static', StaticFiles(directory=STATIC), name='static')
 def load_previous_task() -> dict | None:
     try:
         previous = json.loads(STATE.read_text(encoding='utf-8'))
-        return previous if previous.get('schema_version') == 2 and previous.get('status') in ('completed', 'stopped', 'failed') else None
+        return previous if previous.get('schema_version') in (2, 3) and previous.get('status') in ('completed', 'completed_with_warnings', 'stopped', 'failed') else None
     except (OSError, ValueError, AttributeError):
         return None
 
@@ -68,7 +90,40 @@ def save_task(job: dict) -> None:
 
 task: dict | None = load_previous_task()
 cancel = False
-chart_cache: dict[tuple[str,str,str,str], tuple[float,list,str]] = {}
+scan_runner: asyncio.Task | None = None
+scan_next_start = 0.0
+chart_cache: OrderedDict[tuple[str,str,str,str], tuple[float,list,str]] = OrderedDict()
+
+
+def cache_chart(key, candles, source):
+    for old_key, item in list(chart_cache.items()):
+        if item[0] <= time.monotonic():
+            del chart_cache[old_key]
+    chart_cache[key] = (time.monotonic()+300, candles, source)
+    chart_cache.move_to_end(key)
+    while len(chart_cache) > CHART_CACHE_LIMIT:
+        chart_cache.popitem(last=False)
+
+
+def market_label(name: str, market: str) -> str:
+    return f'{dict(binance="Binance", okx="OKX", gate="Gate")[name]} {"现货" if market == "spot" else "永续"}'
+
+
+def rate_warning(name: str, market: str) -> str:
+    return f'{market_label(name, market)} 暂时受上游 IP 限流影响，本轮已跳过，不影响其他市场扫描。'
+
+
+def totals(job):
+    for value in job['market_stats'].values():
+        value['matched_symbols'] = len({row['pair'] for row in job['results']
+                                      if row['exchange'] == value['exchange'] and row['market'] == value['market']})
+    fields = ('total_symbols', 'processed_symbols', 'matched_symbols', 'failed_symbols', 'skipped_symbols')
+    job['stats'] = {key: sum(value.get(key, 0) for value in job['market_stats'].values()) for key in fields}
+
+
+def warn(job, message):
+    if message not in job['warnings'] and len(job['warnings']) < 100:
+        job['warnings'].append(message)
 
 
 @app.get('/')
@@ -88,28 +143,61 @@ def public_health():
 
 @app.get('/api/task')
 def get_task():
-    return task or {'status':'idle','results':[],'errors':[],'done':0,'total':0}
+    return {**(task or {'status':'idle','results':[],'errors':[],'done':0,'total':0}),
+            'scan_cooldown_seconds': math.ceil(max(0, scan_next_start-time.monotonic()))}
+
+
+@app.get('/api/exchanges/status')
+def exchange_status():
+    return {'hosts': [app.state.http.snapshot(host) for host in
+                     ('api.binance.com', 'fapi.binance.com', 'www.okx.com', 'api.gateio.ws')]}
 
 
 @app.post('/api/task')
 async def start(options: ScanOptions):
-    global task, cancel
+    global task, cancel, scan_runner
     if task and task['status'] == 'running':
         raise HTTPException(409, '扫描正在进行')
+    remaining = math.ceil(scan_next_start-time.monotonic())
+    if remaining > 0:
+        raise HTTPException(429, f'扫描冷却中，请 {remaining} 秒后重试', headers={'Retry-After':str(remaining)})
     cancel = False
-    task = {'schema_version':2,'id':str(uuid.uuid4()),'status':'running','phase':'filtering',
+    task = {'schema_version':3,'id':str(uuid.uuid4()),'status':'running','phase':'filtering',
             'started_at':datetime.now(timezone.utc).isoformat(),'options':options.model_dump(),
             'results':[],'universe':[],'errors':[],'done':0,'total':0,
             'filter_done':0,'filter_total':0,'filter_error_count':0,
-            'current':'', 'finished_at':None}
-    asyncio.create_task(_scan(options, task))
+            'current':'', 'finished_at':None, 'warnings':[], 'duration':0,
+            'market_stats': {f'{name}:{market}': {
+                'exchange':name, 'market':market, 'status':'pending', 'available_symbols':None,
+                'total_symbols':0, 'processed_symbols':0, 'matched_symbols':0,
+                'failed_symbols':0, 'skipped_symbols':0, 'duration':0, 'warnings':[]}
+                for name in options.exchanges for market in options.markets}}
+    totals(task)
+    scan_runner = asyncio.create_task(_scan(options, task))
     return {'id':task['id']}
 
 
 @app.post('/api/task/stop')
-def stop():
-    global cancel
+async def stop():
+    global cancel, scan_next_start
     cancel = True
+    if scan_runner and not scan_runner.done():
+        scan_runner.cancel()
+        await asyncio.gather(scan_runner, return_exceptions=True)
+    # Cancellation before the coroutine's first instruction must also finish the task.
+    if task and task['status'] == 'running':
+        task['status'] = 'stopped'
+        task['finished_at'] = datetime.now(timezone.utc).isoformat()
+        for stats in task['market_stats'].values():
+            if stats['status'] in ('pending','filtering','scanning'):
+                stats['status'] = 'stopped'
+                stats['skipped_symbols'] = max(0, stats['total_symbols']-stats['processed_symbols']-stats['failed_symbols'])
+        totals(task)
+        scan_next_start = time.monotonic()+SCAN_COOLDOWN_SECONDS
+        try:
+            save_task(task)
+        except OSError:
+            warn(task, '结果文件暂时无法保存；当前页面结果仍可查看')
     return {'stopping': True}
 
 
@@ -134,22 +222,26 @@ async def chart(exchange: str, market: str, pair: str, period: str,
     cached = chart_cache.get(key)
     if cached and cached[0] > time.monotonic():
         candles, source = cached[1], cached[2]
+        chart_cache.move_to_end(key)
     else:
         base, multiplier = BASE_PERIOD.get(period, (period, 1))
         try:
-            async with httpx.AsyncClient(headers={'User-Agent':'BottomReversalScanner/1.0','Accept':'application/json'}) as client:
-                adapter = EXCHANGES[exchange](PublicHttp(client, concurrency=2))
-                symbol = Symbol(exchange, pair, pair, market)
-                raw = await adapter.get_klines(symbol, base, 120*multiplier+3)
+            adapter = EXCHANGES[exchange](app.state.http)
+            symbol = Symbol(exchange, pair, pair, market)
+            raw = await adapter.get_klines(symbol, base, 103*multiplier+3)
             now = datetime.now(timezone.utc)
             closed = [c for c in raw if c.time.timestamp()+SECONDS[base] <= now.timestamp()]
             candles = build_candles(closed, period, now)
             if len(candles) < 70:
                 raise ValueError(f'完整K线不足，仅有 {len(candles)} 根')
+        except RateLimitError as exc:
+            raise HTTPException(503, f'{market_label(exchange, market)} 暂时被上游限流，请稍后重试',
+                                headers={'Retry-After':str(exc.details['retry_after'])}) from exc
         except Exception as exc:
-            raise HTTPException(502, f'图表行情获取失败：{type(exc).__name__}: {exc}') from exc
+            logger.warning('Chart request failed exchange=%s market=%s pair=%s type=%s', exchange, market, pair, type(exc).__name__)
+            raise HTTPException(502, '图表行情获取失败：API 暂时不可用或完整 K 线不足，请稍后重试') from exc
         source = 'latest'
-        chart_cache[key] = (time.monotonic()+120, candles, source)
+        cache_chart(key, candles, source)
     return {'exchange':exchange, 'market':market, 'pair':pair, 'period':period,
             'source':source, 'bars_count':len(candles),
             **chart_payload(candles, boll_period=boll_period, boll_std=boll_std,
@@ -159,85 +251,139 @@ async def chart(exchange: str, market: str, pair: str, period: str,
 
 
 async def _scan(options: ScanOptions, job: dict):
+    global scan_next_start
+    began = time.monotonic()
     try:
         scan_now = datetime.fromisoformat(job['started_at'])
-        async with httpx.AsyncClient(headers={'User-Agent':'BottomReversalScanner/1.0','Accept':'application/json'}) as client:
-            http = PublicHttp(client, concurrency=4)
-            exchanges = {name: EXCHANGES[name](http) for name in options.exchanges}
-            for name, exchange in exchanges.items():
-                for market in options.markets:
-                    if cancel: break
-                    try:
-                        job['phase'] = 'filtering'
-                        job['filter_done'] = 0
-                        job['filter_total'] = 0
-                        job['current'] = f'{name} {market}: 正在读取上一完整 UTC 自然日成交额'
+        http = app.state.http
+        for name in options.exchanges:
+            exchange = EXCHANGES[name](http)
+            for market in options.markets:
+                if cancel:
+                    break
+                stats = job['market_stats'][f'{name}:{market}']
+                market_start = time.monotonic()
+                host = exchange.host(market)
+                before = http.snapshot(host)
+                stats['status'] = 'filtering'
+                try:
+                    http.check_available(host)
+                    job['phase'] = 'filtering'
+                    job['filter_done'] = job['filter_total'] = 0
+                    job['current'] = f'{market_label(name, market)}: 正在读取上一完整 UTC 自然日成交额'
 
-                        def update_filter(done: int, total: int, pair: str) -> None:
-                            job['filter_done'] = done
-                            job['filter_total'] = total
-                            job['current'] = f'{name} {market}: 前一日成交额筛选 {pair}'
+                    def update_filter(done: int, total: int, pair: str) -> None:
+                        job['filter_done'], job['filter_total'] = done, total
+                        job['current'] = f'{market_label(name, market)}: 前一日成交额筛选 {pair}'
+                        stats['duration'] = round(time.monotonic()-market_start, 2)
+                        totals(job)
 
-                        volume_day, choices, volume_errors = await eligible_symbols(
-                            exchange, market, options.min_previous_day_turnover,
-                            progress=update_filter, stopped=lambda: cancel, now=scan_now,
-                        )
-                        for error in volume_errors:
-                            if len(job['errors']) < 100:
-                                job['errors'].append(f'{name} {market} 日成交额: {error}')
-                        job['filter_error_count'] += len(volume_errors)
-                        job['universe'].extend({'exchange':name,'market':market,'pair':symbol.pair,
-                                                'previous_day_turnover':round(turnover,2),
-                                                'volume_date':volume_day.date().isoformat()}
-                                               for symbol, turnover in choices)
+                    volume_day, choices, volume_errors = await eligible_symbols(
+                        exchange, market, options.min_previous_day_turnover,
+                        progress=update_filter, stopped=lambda: cancel, now=scan_now,
+                        max_symbols=options.max_symbols, stats=stats,
+                    )
+                    job['errors'].extend(f'{market_label(name, market)} 日成交额: {error}' for error in volume_errors[:max(0,100-len(job['errors']))])
+                    job['filter_error_count'] += stats['failed_symbols']
+                    job['universe'].extend({'exchange':name,'market':market,'pair':symbol.pair,
+                                            'previous_day_turnover':round(turnover,2),
+                                            'volume_date':volume_day.date().isoformat()}
+                                           for symbol, turnover in choices)
+                    if stats.get('halted'):
+                        raise RateLimitError(host, stats['upstream_error'])
+                    job['total'] += len(choices)*len(options.periods)
+                    job['phase'] = 'scanning'
+                    stats['status'] = 'scanning'
+                    for symbol, turnover in choices:
                         if cancel:
                             break
-                        if not choices:
-                            job['current'] = f'{name} {market}: 前一日成交额门槛下没有符合交易对'
-                        job['total'] += len(choices)*len(options.periods)
-                        job['phase'] = 'scanning'
-                        for symbol, turnover in choices:
-                            if cancel: break
-                            raw_cache = {}
-                            for period in options.periods:
-                                if cancel: break
-                                job['current'] = f'{name} {market} {symbol.pair} {period}'
-                                try:
-                                    base, multiplier = BASE_PERIOD.get(period,(period,1))
-                                    # 100 closed bars is enough for indicator warmup and recent structure.
-                                    needed = 103*multiplier + 3
-                                    if base not in raw_cache or len(raw_cache[base]) < needed:
-                                        raw_cache[base] = await exchange.get_klines(symbol,base,needed)
-                                    now = datetime.now(timezone.utc)
-                                    raw = [c for c in raw_cache[base] if c.time.timestamp()+SECONDS[base] <= now.timestamp()]
-                                    candles = build_candles(raw,period,now)
-                                    if len(candles) < 70:
-                                        raise ValueError(f'完整K线不足，仅有 {len(candles)} 根')
-                                    signal = analyze(candles)
-                                    if signal:
-                                        chart_cache[(name, market, symbol.pair, period)] = (time.monotonic()+300, candles, 'scan')
-                                        job['results'].append({'exchange':name,'market':market,'pair':symbol.pair,
-                                            'period':period,'previous_day_turnover':round(turnover,2),
-                                            'volume_date':volume_day.date().isoformat(),
-                                            **signal.to_dict()})
-                                        job['results'].sort(key=lambda x:({'启动':0,'双转换确认':1,'临界':2,'观察':3}[x['stage']],-x['score'],x['pair']))
-                                except Exception as exc:
-                                    if len(job['errors']) < 100:
-                                        job['errors'].append(f'{job["current"]}: {type(exc).__name__}: {exc}')
-                                finally:
-                                    job['done'] += 1
-                    except Exception as exc:
-                        job['errors'].append(f'{name} {market}: {type(exc).__name__}: {exc}')
-                if cancel: break
-        job['status'] = 'stopped' if cancel else 'completed'
-    except Exception as exc:
+                        raw_cache = {}
+                        failed, matched = False, False
+                        for period in options.periods:
+                            job['current'] = f'{market_label(name, market)} {symbol.pair} {period}'
+                            try:
+                                base, multiplier = BASE_PERIOD.get(period,(period,1))
+                                # Keep the existing warmup length and closed-candle strategy input.
+                                needed = 103*multiplier + 3
+                                if base not in raw_cache or len(raw_cache[base]) < needed:
+                                    raw_cache[base] = await exchange.get_klines(symbol,base,needed)
+                                now = datetime.now(timezone.utc)
+                                raw = [c for c in raw_cache[base] if c.time.timestamp()+SECONDS[base] <= now.timestamp()]
+                                candles = build_candles(raw,period,now)
+                                if len(candles) < 70:
+                                    raise ValueError('完整K线不足')
+                                signal = analyze(candles)
+                                cache_chart((name, market, symbol.pair, period), candles, 'scan')
+                                if signal:
+                                    matched = True
+                                    job['results'].append({'exchange':name,'market':market,'pair':symbol.pair,
+                                        'period':period,'previous_day_turnover':round(turnover,2),
+                                        'volume_date':volume_day.date().isoformat(), **signal.to_dict()})
+                            except RateLimitError as exc:
+                                if exc.request_sent:
+                                    stats['failed_symbols'] += 1
+                                raise
+                            except Exception as exc:
+                                failed = True
+                                logger.warning('Symbol analysis failed exchange=%s market=%s pair=%s period=%s type=%s',
+                                               name, market, symbol.pair, period, type(exc).__name__)
+                                if len(job['errors']) < 100:
+                                    job['errors'].append(f'{job["current"]}: API 请求失败或完整 K 线不足')
+                            finally:
+                                job['done'] += 1
+                        stats['failed_symbols' if failed else 'processed_symbols'] += 1
+                        stats['matched_symbols'] += int(matched)
+                        stats['duration'] = round(time.monotonic()-market_start, 2)
+                        totals(job)
+                    stats['status'] = 'completed_with_warnings' if stats['failed_symbols'] else 'success'
+                    if stats['failed_symbols']:
+                        message = f'{market_label(name, market)} 有 {stats["failed_symbols"]} 个币种读取失败'
+                        stats['warnings'].append(message)
+                        warn(job, message)
+                except RateLimitError as exc:
+                    stats['status'] = 'rate_limited'
+                    stats['upstream_error'] = exc.details
+                    message = rate_warning(name, market)
+                    stats['warnings'].append(message)
+                    warn(job, message)
+                except Exception as exc:
+                    stats['status'] = 'unavailable'
+                    logger.warning('Market scan unavailable exchange=%s market=%s type=%s', name, market, type(exc).__name__)
+                    message = f'{market_label(name, market)} API 暂时不可用，本轮已跳过'
+                    stats['warnings'].append(message)
+                    warn(job, message)
+                finally:
+                    if stats['status'] in ('rate_limited', 'unavailable'):
+                        accounted = stats['processed_symbols']+stats['failed_symbols']+stats['skipped_symbols']
+                        stats['skipped_symbols'] += max(0, stats['total_symbols']-accounted)
+                    stats['duration'] = round(time.monotonic()-market_start, 2)
+                    after = http.snapshot(host)
+                    stats['http'] = {key:after[key]-before[key] for key in ('requests','http_429','http_418','timeouts','cache_hits')}
+                    totals(job)
+            if cancel:
+                break
+        job['results'].sort(key=lambda x:({'启动':0,'双转换确认':1,'临界':2,'观察':3}[x['stage']],-x['score'],x['pair']))
+        job['status'] = 'stopped' if cancel else 'completed_with_warnings' if job['warnings'] or job['errors'] else 'completed'
+    except asyncio.CancelledError:
+        job['status'] = 'stopped'
+    except Exception:
         job['status'] = 'failed'
-        job['errors'].append(f'扫描程序错误: {type(exc).__name__}: {exc}')
+        logger.exception('Unexpected scan error')
+        warn(job, '扫描发生内部错误，请稍后重试')
     finally:
-        job['current'] = (f'前一日成交额有 {job["filter_error_count"]} 个币种读取失败，详见错误列表'
-                          if job.get('filter_error_count') else '')
+        scan_next_start = time.monotonic()+SCAN_COOLDOWN_SECONDS
+        for stats in job['market_stats'].values():
+            if stats['status'] in ('pending','filtering','scanning'):
+                stats['status'] = 'stopped' if job['status'] == 'stopped' else 'unavailable'
+                accounted = stats['processed_symbols']+stats['failed_symbols']+stats['skipped_symbols']
+                stats['skipped_symbols'] += max(0, stats['total_symbols']-accounted)
+        totals(job)
+        job['duration'] = round(time.monotonic()-began, 2)
+        job['current'] = '部分市场完成，详见交易所状态' if job['status'] == 'completed_with_warnings' else ''
         job['finished_at'] = datetime.now(timezone.utc).isoformat()
         try:
             save_task(job)
-        except OSError as exc:
-            job['errors'].append(f'本地结果保存失败: {exc}')
+        except OSError:
+            warn(job, '结果文件暂时无法保存；当前页面结果仍可查看')
+            if job['status'] == 'completed':
+                job['status'] = 'completed_with_warnings'

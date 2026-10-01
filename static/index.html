@@ -18,12 +18,14 @@
         <fieldset><legend>市场</legend><div class="choices" id="markets"><label><input type="checkbox" value="spot"> USDT 现货</label><label><input type="checkbox" value="perpetual"> USDT 永续</label></div></fieldset>
         <fieldset><legend>扫描周期 <span class="muted">可多选</span></legend><div class="periods" id="periods"></div></fieldset>
         <div class="field"><label for="turnover">上一完整 UTC 自然日最低成交额 <span>USDT</span></label><input id="turnover" type="number" min="0" step="1000000"></div>
+        <details class="scan-scope"><summary>受控扫描范围</summary><div class="field"><label for="max-symbols">每市场最多检查币种数</label><input id="max-symbols" type="number" min="1" max="100" placeholder="留空：全部币种"></div><p class="setting-note">填 1–100 可先验证少量币种；留空仍扫描全部活跃 USDT 币种，成交额与指标规则相同。</p></details>
         <p class="setting-note">逐一检查所选交易所全部活跃 USDT 币种的前一日成交额。多选市场和周期会显著增加请求量与耗时。</p>
         <button id="start" class="primary">开始扫描</button><button id="stop" class="secondary" disabled>停止扫描</button>
       </aside>
       <section class="content">
         <div class="overview"><div class="stat"><small>状态</small><strong id="status">待扫描</strong></div><div class="stat"><small>进度</small><strong id="progress">0 / 0</strong></div><div class="stat"><small>候选信号</small><strong id="count">0</strong></div><div class="stat"><small>最近扫描</small><strong id="last-scan">—</strong></div></div>
         <div class="progress-box"><div><strong id="current">选择市场与周期后开始扫描</strong><span id="pct">0%</span></div><div class="track"><div id="bar"></div></div></div>
+        <section class="exchange-status" aria-labelledby="exchange-status-title"><h2 id="exchange-status-title">交易所状态</h2><p id="scan-summary">尚未开始扫描</p><div id="market-status" class="market-status"></div><p id="scan-cooldown" class="setting-note"></p></section>
         <section class="chart-launch" aria-labelledby="chart-launch-title">
           <div><span class="eyebrow">MARKET CHART</span><h2 id="chart-launch-title">行情图表</h2><p id="chart-universe-note">开始扫描后，可从达到前一日成交额门槛的币种中选择图表。</p></div>
           <div class="chart-launch-fields">

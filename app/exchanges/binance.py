@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import httpx
 
 from app.exchanges.base import ApiError, BaseExchange
 from app.models import Candle, Symbol, Ticker
@@ -9,6 +10,9 @@ class BinanceExchange(BaseExchange):
 
     def url(self, market: str) -> str:
         return 'https://api.binance.com/api/v3' if market == 'spot' else 'https://fapi.binance.com/fapi/v1'
+
+    def host(self, market: str) -> str:
+        return httpx.URL(self.url(market)).host
 
     async def get_symbols(self, market: str) -> list[Symbol]:
         data = await self.http.get(self.url(market) + '/exchangeInfo', ttl=600)
