@@ -65,4 +65,3 @@ python -m pytest -q
 ```
 
 页面不收集 API Key、Secret 或私钥。行情接口参考：[Binance 官方文档](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints)、[OKX 官方文档](https://www.okx.com/docs-v5/en/)、[Gate 官方文档](https://www.gate.com/docs/developers/apiv4/en/)。
-
