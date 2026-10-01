@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>底部双转换选币器</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+  <script src="/static/chart.js" defer></script>
+</head>
+<body>
+  <header class="top"><div class="brand"><div class="logo">↗</div><div><strong>底部双转换选币器</strong><small>公开行情 · 已收盘 K 线 · 多周期扫描</small></div></div><span class="read-only">● 仅供技术研究</span></header>
+  <main>
+    <section class="hero"><div><span class="eyebrow">BOTTOM REVERSAL SCANNER</span><h1>从连续回落中，寻找真正的转换时刻。</h1><p>观察空头动能衰减、KDJ 低位拐头，再确认平均K线翻阳与 SAR 翻多。所有判断只使用已收盘 K 线。</p></div><div class="hero-steps"><span>01 连续回落</span><b>→</b><span>02 动能衰减</span><b>→</b><span>03 双转换</span><b>→</b><span>04 启动</span></div></section>
+    <div class="workspace">
+      <aside class="panel"><div class="panel-head"><h2>扫描设置</h2><span>默认 4H</span></div>
+        <fieldset><legend>交易所</legend><div class="choices" id="exchanges"><label><input type="checkbox" value="binance"> Binance</label><label><input type="checkbox" value="okx"> OKX</label><label><input type="checkbox" value="gate"> Gate</label></div></fieldset>
+        <fieldset><legend>市场</legend><div class="choices" id="markets"><label><input type="checkbox" value="spot"> USDT 现货</label><label><input type="checkbox" value="perpetual"> USDT 永续</label></div></fieldset>
+        <fieldset><legend>扫描周期 <span class="muted">可多选</span></legend><div class="periods" id="periods"></div></fieldset>
+        <div class="field"><label for="turnover">上一完整 UTC 自然日最低成交额 <span>USDT</span></label><input id="turnover" type="number" min="0" step="1000000"></div>
+        <p class="setting-note">逐一检查所选交易所全部活跃 USDT 币种的前一日成交额。多选市场和周期会显著增加请求量与耗时。</p>
+        <button id="start" class="primary">开始扫描</button><button id="stop" class="secondary" disabled>停止扫描</button>
+      </aside>
+      <section class="content">
+        <div class="overview"><div class="stat"><small>状态</small><strong id="status">待扫描</strong></div><div class="stat"><small>进度</small><strong id="progress">0 / 0</strong></div><div class="stat"><small>候选信号</small><strong id="count">0</strong></div><div class="stat"><small>最近扫描</small><strong id="last-scan">—</strong></div></div>
+        <div class="progress-box"><div><strong id="current">选择市场与周期后开始扫描</strong><span id="pct">0%</span></div><div class="track"><div id="bar"></div></div></div>
+        <section class="chart-launch" aria-labelledby="chart-launch-title">
+          <div><span class="eyebrow">MARKET CHART</span><h2 id="chart-launch-title">行情图表</h2><p id="chart-universe-note">开始扫描后，可从达到前一日成交额门槛的币种中选择图表。</p></div>
+          <div class="chart-launch-fields">
+            <label>交易所<select id="preview-exchange"><option value="binance">Binance</option><option value="okx">OKX</option><option value="gate">Gate</option></select></label>
+            <label>市场<select id="preview-market"><option value="spot">USDT 现货</option><option value="perpetual">USDT 永续</option></select></label>
+            <label>符合门槛的交易对<select id="preview-pair"><option value="">等待成交额筛选</option></select></label>
+            <label>周期<select id="preview-period"></select></label>
+            <button id="preview-open" type="button">查看图表</button>
+          </div>
+        </section>
+        <section class="results-panel" aria-labelledby="results-heading">
+        <div class="section-head"><div><span class="eyebrow">SCAN RESULTS</span><h2 id="results-heading">形态候选</h2><p>点击币种查看真实 K 线与指标。“观察、临界”是预警；“双转换确认、启动”需同时满足前置回落与底部位置条件。</p></div><input id="search" type="search" placeholder="搜索币种、交易所、周期、阶段"></div>
+        <div class="stage-guide" aria-label="信号阶段说明">
+          <div class="stage-item"><span class="tag observe">观察</span><span>回落与底部初筛</span></div>
+          <div class="stage-item"><span class="tag critical">临界</span><span>MACD/KDJ 转强且接近转换</span></div>
+          <div class="stage-item"><span class="tag confirmed">双转换确认</span><span>两次翻转相距 ≤3 根</span></div>
+          <div class="stage-item"><span class="tag launched">启动</span><span>站上中轨且放量</span></div>
+        </div>
+        <p class="table-hint">左右滑动表格，可查看评分、转换与判断依据。</p>
+        <div class="table-wrap"><table><thead><tr><th>币种 / 市场</th><th>周期</th><th>阶段</th><th>评分</th><th>回落</th><th>距低点</th><th>转换</th><th>依据</th></tr></thead><tbody id="results"><tr><td colspan="8" class="empty">暂无结果。开始扫描后，符合条件的真实行情将显示在这里。</td></tr></tbody></table></div>
+        <details class="errors"><summary>请求与扫描错误 <b id="error-count">0</b></summary><ul id="error-list"></ul></details>
+      </section>
+      </section>
+    </div>
+    <footer>公开行情筛选工具；不执行交易，不构成投资建议。候选信号可能失败，图例仅用于规则设计。</footer>
+  </main>
+  <div id="chart-modal" class="chart-modal hidden" role="dialog" aria-modal="true" aria-labelledby="chart-title">
+    <div class="chart-dialog">
+      <div class="chart-header"><div><span class="eyebrow">MARKET DETAIL</span><h2 id="chart-title">K 线与指标</h2><p id="chart-subtitle"></p></div><button id="chart-close" class="chart-close" aria-label="关闭图表">✕</button></div>
+      <div class="chart-toolbar" aria-label="图表显示选项">
+        <strong class="chart-toolbar-title">普通 K 线 → 平均 K 线 → MACD → KDJ → 成交量</strong>
+        <div class="chart-indicators">
+          <label class="chart-toggle"><input type="checkbox" id="show-boll"> BOLL</label>
+          <label class="chart-toggle"><input type="checkbox" id="show-sar"> SAR</label>
+          <label class="chart-toggle"><input type="checkbox" id="show-macd"> MACD</label>
+          <label class="chart-toggle"><input type="checkbox" id="show-kdj"> KDJ</label>
+          <label class="chart-toggle"><input type="checkbox" id="show-volume"> 成交量</label>
+        </div>
+      </div>
+      <details class="chart-settings"><summary>图表指标设置</summary>
+        <div class="chart-controls">
+          <div class="chart-field"><label for="boll-period">BOLL 周期</label><input id="boll-period" type="number" min="5" max="60"></div>
+          <div class="chart-field"><label for="boll-std">标准差</label><input id="boll-std" type="number" min="0.1" max="5" step="0.1"></div>
+          <div class="chart-field"><label for="sar-step">SAR Step</label><input id="sar-step" type="number" min="0.001" max="0.2" step="0.001"></div>
+          <div class="chart-field"><label for="sar-max">SAR Max</label><input id="sar-max" type="number" min="0.01" max="1" step="0.01"></div>
+          <div class="chart-field"><label for="macd-fast">MACD Fast</label><input id="macd-fast" type="number" min="1" max="50"></div>
+          <div class="chart-field"><label for="macd-slow">MACD Slow</label><input id="macd-slow" type="number" min="2" max="100"></div>
+          <div class="chart-field"><label for="macd-signal">MACD Signal</label><input id="macd-signal" type="number" min="1" max="50"></div>
+          <div class="chart-field"><label for="kdj-period">KDJ 周期</label><input id="kdj-period" type="number" min="3" max="50"></div>
+          <div class="chart-field"><label for="kdj-smooth">KDJ 平滑</label><input id="kdj-smooth" type="number" min="2" max="10"></div>
+          <button id="chart-apply" class="chart-apply">应用图表参数</button>
+        </div>
+        <p class="chart-note">这些参数只改变图表显示，不会重新判定扫描信号。</p>
+      </details>
+      <div id="chart-status" class="chart-status"></div>
+      <div id="chart-tooltip" class="chart-tooltip">将鼠标移到 K 线上查看数值</div>
+      <div class="chart-plot"><div class="chart-panel-title">普通 K 线 · BOLL · SAR</div><canvas id="price-canvas"></canvas></div>
+      <div class="chart-plot"><div class="chart-panel-title">平均 K 线 / Heikin-Ashi · BOLL · SAR</div><canvas id="ha-canvas"></canvas></div>
+      <div id="macd-panel" class="chart-plot"><div class="chart-panel-title">MACD · DIF · DEA · 柱状图</div><canvas id="macd-canvas"></canvas></div>
+      <div id="kdj-panel" class="chart-plot"><div class="chart-panel-title">KDJ · K · D · J</div><canvas id="kdj-canvas"></canvas></div>
+      <div id="volume-panel" class="chart-plot"><div class="chart-panel-title">成交量</div><canvas id="volume-canvas"></canvas></div>
+    </div>
+  </div>
+</body>
+</html>
