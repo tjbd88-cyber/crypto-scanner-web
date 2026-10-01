@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/chart.js" defer></script>
+  <script src="/static/auto.js" defer></script>
 </head>
 <body>
   <header class="top"><div class="brand"><div class="logo">↗</div><div><strong>底部双转换选币器</strong><small>公开行情 · 已收盘 K 线 · 多周期扫描</small></div></div><span class="read-only">● 仅供技术研究</span></header>
@@ -50,6 +51,39 @@
       </section>
       </section>
     </div>
+    <section class="panel auto-panel" aria-labelledby="auto-title">
+      <div class="panel-head"><h2 id="auto-title">自动扫描</h2><span id="auto-state">读取状态…</span></div>
+      <p>每小时检查一次 4H 已收盘 K 线。首次建立基线不发送提醒，相同 K 线不重复分析。</p>
+      <div class="auto-settings">
+        <fieldset><legend>交易所</legend><div class="choices" id="auto-exchanges"><label><input type="checkbox" value="binance"> Binance</label><label><input type="checkbox" value="okx"> OKX</label><label><input type="checkbox" value="gate"> Gate</label></div></fieldset>
+        <fieldset><legend>市场</legend><div class="choices" id="auto-markets"><label><input type="checkbox" value="spot"> 现货</label><label><input type="checkbox" value="perpetual"> 永续</label></div></fieldset>
+        <label>分析周期<select id="auto-period"><option value="4h">4H 已收盘 K 线</option></select></label>
+        <label>执行频率<select id="auto-frequency"><option>每小时一次</option></select></label>
+        <label>前一完整 UTC 日成交额 / USDT<input type="number" id="auto-turnover" min="0" step="1000000" value="10000000"></label>
+        <label>受控验收范围<input type="number" id="auto-limit" min="1" max="100" placeholder="留空：全部币种"></label>
+      </div>
+      <label class="auto-admin">管理凭证<input type="password" id="auto-token" autocomplete="off" placeholder="公网管理需填写服务端管理 token；不会保存到浏览器"></label>
+      <div class="auto-actions"><button id="auto-enable" class="primary">开启 / 保存设置</button><button id="auto-disable" class="secondary">关闭</button><button id="auto-check" class="secondary">立即检查</button><a href="/history#signal-history">历史信号</a></div>
+      <p id="auto-error" role="alert"></p><p id="auto-warning" class="setting-note"></p>
+      <div class="overview"><div class="stat"><small>下次检查</small><strong id="auto-next">—</strong></div><div class="stat"><small>上次运行</small><strong id="auto-last">—</strong></div><div class="stat"><small>上次耗时</small><strong id="auto-duration">—</strong></div><div class="stat"><small>新增信号</small><strong id="auto-new">0</strong></div></div>
+      <p id="auto-summary"></p><div id="auto-market-status" class="market-status"></div>
+    </section>
+    <section class="panel history-panel" id="signal-history" aria-labelledby="history-title">
+      <div class="panel-head"><h2 id="history-title">最新信号 / 历史信号</h2><span id="history-count">0 条</span></div>
+      <p>观察与临界属于预警，双转换确认与启动属于现有策略的确认阶段。点击任一记录打开当前行情图，K 线时间为 UTC 开盘时间。</p>
+      <div class="history-filters">
+        <label>交易所<select id="history-exchange"><option value="">全部</option><option value="binance">Binance</option><option value="okx">OKX</option><option value="gate">Gate</option></select></label>
+        <label>市场<select id="history-market"><option value="">全部</option><option value="spot">现货</option><option value="perpetual">永续</option></select></label>
+        <label>周期<select id="history-period"><option value="">全部</option><option value="4h">4H</option></select></label>
+        <label>币种<input id="history-pair" type="search" placeholder="例如 DASH"></label>
+        <label>阶段<select id="history-stage"><option value="">全部</option><option>观察</option><option>临界</option><option>双转换确认</option><option>启动</option><option>失效</option></select></label>
+        <label>发现日期起 / UTC<input id="history-from" type="date"></label><label>发现日期止 / UTC<input id="history-to" type="date"></label>
+        <button id="history-filter">筛选</button>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>币种 / 市场</th><th>周期 / 阶段</th><th>评分</th><th>K 线 / 发现时间</th><th>回落</th><th>SAR / HA 转换</th><th>原因</th></tr></thead><tbody id="history-results"><tr><td colspan="7" class="empty">尚无历史记录</td></tr></tbody></table></div>
+      <div class="auto-actions"><button id="history-prev" class="secondary">上一页</button><span id="history-page">1</span><button id="history-next" class="secondary">下一页</button></div>
+      <p id="history-error" role="alert"></p>
+    </section>
     <footer>公开行情筛选工具；不执行交易，不构成投资建议。候选信号可能失败，图例仅用于规则设计。</footer>
   </main>
   <div id="chart-modal" class="chart-modal hidden" role="dialog" aria-modal="true" aria-labelledby="chart-title">

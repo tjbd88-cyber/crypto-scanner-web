@@ -95,6 +95,14 @@ class PublicHttp:
         self.cache_entries, self.cache_bytes = cache_entries, cache_bytes
         self._cache_size = 0
         self._key_locks: dict[str, tuple[asyncio.Lock, int]] = {}
+        self.on_block = None
+
+    def restore_cooldown(self, host: str, details: dict) -> None:
+        remaining = datetime.fromisoformat(details['cooldown_until']).timestamp()-self.wall_clock()
+        if remaining > 0:
+            state = self.state(host)
+            state.cooldown_until = self.clock()+remaining
+            state.blocked = details
 
     def state(self, host: str) -> HostState:
         if host not in self.hosts:
@@ -160,6 +168,8 @@ class PublicHttp:
                    'used_weight': state.used_weight, 'endpoint': str(response.request.url.copy_with(query=None)),
                    'message': safe_upstream_message(response)}
         state.blocked = details
+        if self.on_block:
+            self.on_block(host, details)
         logger.warning('Public market throttled host=%s status=%s retry_after=%s used_weight=%s message=%s',
                        host, response.status_code, delay, state.used_weight, details['message'])
         return RateLimitError(host, details, request_sent=True)

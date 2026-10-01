@@ -57,5 +57,5 @@ async function refresh(){
   }
 }
 $('start').addEventListener('click',async()=>{try{const body=collect();if(!body.exchanges.length||!body.markets.length||!body.periods.length){alert('请至少选择一个交易所、市场和周期');return}if(body.max_symbols!==null&&(!Number.isInteger(body.max_symbols)||body.max_symbols<1||body.max_symbols>100)){alert('受控币种数量请填 1–100，或留空扫描全部');return}$('start').disabled=true;const r=await fetch('/api/task',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok){const j=await r.json();throw Error(typeof j.detail==='string'?j.detail:`参数无效（HTTP ${r.status}）`)}await refresh()}catch(e){alert(e instanceof TypeError?'扫描服务暂时无法连接，请稍后刷新页面。':`无法开始扫描：${e.message||e}`);await refresh()}});
-$('stop').addEventListener('click',async()=>{try{const r=await fetch('/api/task/stop',{method:'POST'});if(!r.ok)throw Error(`HTTP ${r.status}`);await refresh()}catch{alert('停止请求未送达，请稍后重试。')}});
+$('stop').addEventListener('click',async()=>{try{const r=await fetch('/api/task/stop',{method:'POST',headers:$('auto-token')?.value?{Authorization:'Bearer '+$('auto-token').value}:{}});if(!r.ok)throw Error(`HTTP ${r.status}`);await refresh()}catch{alert('停止请求未送达，请稍后重试。')}});
 refresh();setInterval(refresh,3000);

@@ -24,6 +24,7 @@ async def eligible_symbols(
     now: datetime | None = None,
     max_symbols: int | None = None,
     stats: dict | None = None,
+    repository=None,
 ) -> tuple[datetime, list[tuple[Symbol, float]], list[str]]:
     day = previous_utc_day(now)
     symbols = await exchange.get_symbols(market)
@@ -39,8 +40,19 @@ async def eligible_symbols(
         if stopped and stopped():
             break
         batch = symbols[offset:offset + 3]
+        async def daily(symbol):
+            key = f'{symbol.exchange}:{market}:{symbol.pair}'
+            cached = repository.turnover(key, day.date().isoformat()) if repository else None
+            if cached is not None:
+                return cached
+            candles = await exchange.get_klines(symbol, '1d', 3)
+            candle = next((c for c in candles if c.time.astimezone(timezone.utc) == day), None)
+            if candle and repository:
+                repository.save_turnover(key, day.date().isoformat(), candle.quote_volume)
+            return candle.quote_volume if candle else None
+
         outcomes = await asyncio.gather(
-            *(exchange.get_klines(symbol, '1d', 3) for symbol in batch),
+            *(daily(symbol) for symbol in batch),
             return_exceptions=True,
         )
         for symbol, outcome in zip(batch, outcomes):
@@ -55,9 +67,8 @@ async def eligible_symbols(
                     if len(errors) < 100:
                         errors.append(f'{symbol.pair}: 行情读取失败')
             else:
-                candle = next((c for c in outcome if c.time.astimezone(timezone.utc) == day), None)
-                if candle and candle.quote_volume >= min_turnover:
-                    eligible.append((symbol, candle.quote_volume))
+                if outcome is not None and outcome >= min_turnover:
+                    eligible.append((symbol, outcome))
                 else:
                     stats['processed_symbols'] += 1
             stats['filter_checked'] = checked

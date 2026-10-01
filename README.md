@@ -50,7 +50,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8911
 - HTTP 418：不重试，立即封锁该域名后续网络请求。本轮跳过受影响市场并显示明确提示。优先采用 `Retry-After`，缺失时读取 Binance 消息中的 ban expiry，再缺失则保守冷却 15 分钟。已在网络中的少量请求可能仍返回，但排队请求不会继续发送。封禁状态独立于其它域名，也共享给图表接口；可用 `/api/exchanges/status` 查看状态和经过脱敏的上游诊断。
 - `X-MBX-USED-WEIGHT-1M` 存在时记录在状态与限流日志中；不依赖该头一定存在。网络异常、超时和 5xx 最多尝试 3 次，单次 HTTP timeout 为 15 秒，重试退避 1、2 秒。错误提示不展示 Python traceback，诊断不保留完整响应 HTML，IP 地址会脱敏。
 - 原始响应缓存保持接口 URL、symbol、period、limit 等完整参数作为 key，K 线缓存 40 秒、交易对列表 600 秒。并发的相同请求复用已完成缓存。缓存最多 128 项、原始响应计量不超过 8 MiB；图表 K 线缓存最多 64 项、5 分钟，扫描成功的 K 线可直接用于图表。图表采用与扫描相同的取数长度；扫描算法和已收盘 K 线过滤保持不变。
-- 服务端同一时刻只允许一个扫描；重复启动返回 409。正常结束、停止或失败后冷却 60 秒，再次启动返回 429 与 `Retry-After`。停止会取消等待中的行情请求。当前状态和缓存限于单个进程，Render 重启会清空冷却状态；这不是跨实例或独立出站 IP 的限流保证。
+- 服务端同一时刻只允许一个扫描；重复启动返回 409。正常结束、停止或失败后冷却 60 秒，再次启动返回 429 与 `Retry-After`。停止会取消等待中的行情请求。已观察到的域名封禁写入 repository，SQLite 数据保留时，重启会恢复剩余封禁时间；Render Free 丢失数据库时无法恢复。这不是跨实例或独立出站 IP 的限流保证。
 - `completed_with_warnings` 表示有市场不可用、限流或币种读取失败。每个市场记录总范围、成功处理、匹配、失败、跳过、请求数、418/429 次数和耗时。币种计数按交易所/市场独立统计；成功处理包括已完成成交额检查但未达门槛的币种，匹配按币种去重，结果表仍按币种与周期列出信号。如果市场列表都无法读取，范围标记为未知，不虚构币种数量。
 
 ## 受控验收
@@ -86,7 +86,7 @@ python scripts/verify_scan.py --url https://crypto-scanner-web-bzds.onrender.com
 
 ## 限制
 
-- 扫描是手动触发；没有后台定时监控、通知、历史记录、回测或自动交易。
+- 支持手动扫描和服务端自动扫描、SQLite 历史、日志提醒及可选 webhook；没有回测、Telegram/微信集成或自动交易。当前 Render Free 的长期自动运行与持久化尚需部署配置，不能视为已经获得每小时可靠运行保证。
 - 全市场日成交额筛选需要对每个活跃交易对请求日线，可能需要数分钟或更久。交易所可能限频、地区限制或暂时不可访问；失败项会显示在错误列表中，不能视为通过或不通过门槛。
 - 前一日按 UTC 日历日计算，与本地自然日或交易所界面的其他时区设置可能不同。新上市币种如没有完整的昨日 UTC 日线，不会进入扫描。
 - “观察”与“临界”是早期预警，不能当成已确认的反转。即使达到“启动”，也可能是假突破。
@@ -101,3 +101,54 @@ python -m pytest -q
 ```
 
 页面不收集 API Key、Secret 或私钥。行情接口参考：[Binance 官方文档](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints)、[OKX 官方文档](https://www.okx.com/docs-v5/en/)、[Gate 官方文档](https://www.gate.com/docs/developers/apiv4/en/)。
+
+## 自动扫描
+
+自动扫描新增在现有 `_scan` 流程上，使用同一 `PublicHttp`、连接池、限流状态、策略和图表。不修改前置回落、SAR、HA、MACD、KDJ、BOLL 的定义；现有双转换规则仍为最多相距 **3 根**，并未擅自改成 1–2 根。
+
+- 默认配置：Binance / OKX / Gate，Spot + Perpetual，**4H 已收盘 K 线**，每小时一次，昨天 UTC 日成交额 1000 万 USDT。默认关闭，首次上线建议每市场 5 个币种，先验证三个现货市场，再加入 OKX/Gate 永续。
+- 自动设置在服务端数据库保存，手动扫描及图表参数仍按原方式保存。关闭自动扫描停止未来调度，正在执行的一轮可用“停止扫描”结束；公网自动任务的停止也需要管理凭证。
+- `FastAPI lifespan` 管理一个时钟任务。启动创建、关闭取消；启用后下一整点检查。`AUTO_SCAN_SCHEDULER_MODE=external` 不启动内部时钟，等待受保护的外部触发。两种模式都经过同一个扫描互斥槽位和至少一小时的自动启动间隔；不支持更高频率。每个部署只运行 **1 个 uvicorn worker / 1 个实例**。
+- 手动正在执行时，自动轮次记录 `skipped_due_to_manual_scan`；自动正在执行时，手动启动返回 409。冷却和自动启动频率限制也会记录 skipped 轮次。
+- 每个 `exchange:market:pair:period` 保存 `last_closed_candle_time` 和最多 106 根完整 K 线。UTC 边界尚未推进时直接跳过，无 K 线请求、无指标计算；边界推进后请求最新几根（按缺口扩大、最多 106 根），合并并验证连续性。只对交易所实际返回的已收盘 K 线分析，时钟不会生成正式信号。如果交易所仍返回上一根，记录 `no_new_candle`。历史不足 70 根或缺失不产生信号。
+- 交易对列表复用原 600 秒缓存；昨日成交额按交易所/市场/币种/UTC 日期持久缓存（包含成功读出的 0 成交额），同一天不重复下载。网络失败和缺失昨日数据不当成 0 缓存。当前有效增量 K 线也可供图表复用。
+- Futures 的 418 冷却仍有效时，整市场 `skipped_rate_limited`，不会新发请求；其他市场继续，最终可为 `completed_with_warnings`。
+
+### 历史、去重与提醒
+
+`SignalRepository` 是存储边界；`SQLiteSignalRepository` 集中管理 SQL，默认文件 `data/scanner.db`，可通过 `SCANNER_DB_PATH` 改为持久磁盘路径。数据库包含 signals、scan_runs、checkpoints、daily_turnover、settings。scan_runs 记录手动、自动及跳过任务；进程重启把未结束任务标为失败。该接口以后可用 PostgreSQL 实现替换，当前尚未实现 PostgreSQL。
+
+信号 ID：`exchange:market:pair:period:double_flip:candle_time`，时间标准化为 UTC ISO 8601，以已收盘 K 线**开盘时间**为准。`double_flip` 表示现有底部双转换策略族，阶段字段区分“观察 / 临界 / 双转换确认 / 启动”，预警不会伪装成已确认信号。数据库主键防止重复保存，提醒原子领取标记防止同一 ID 重复发送。
+
+每个交易对第一次成功分析都是**静默基线**，保存信号并设 `notified=true`、`baseline=true`，不发送提醒；后续扩展到新交易对也不会批量补发。新的完整 K 线产生新 ID 才提醒。后续完整 K 线分析不再符合原策略时，原有效记录标为 `status=invalid`，页面显示“失效（原阶段）”；历史保留。初版不区分结构低点破位和其它失效原因。
+
+提醒与指标分离：`NotificationService` → 默认 `LogNotificationService`，仅记录新信号。配置 `SIGNAL_WEBHOOK_URL` 时使用 webhook，POST 包含 event、id、exchange、market、pair、period、stage、score、candle_time、detected_at；5 秒 timeout，最多 2 次尝试，不记录 URL/token/响应。失败不阻断扫描，记录提醒失败警告。先领取再发送，进程中断或失败后**不自动重发**，可能漏通知；`notified` 表示已领取/基线抑制，不保证外部平台已送达。HTTP 重试使用相同 `Idempotency-Key`，接收方需要按 ID 去重，网络本身不能保证远端 exactly-once。
+
+网页新增自动状态、上次运行/耗时/新信号、市场状态、最新信号及 `/history`。历史每页最多 100 条，支持交易所、市场、周期、币种、阶段、发现 UTC 日期筛选，点击记录复用现有图表。历史保存信号字段，打开图表默认显示最新完整行情，不是永久历史快照。
+
+### API 与管理权限
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | `/api/auto-scan/status` | 设置、运行状态、存储限制、上次结果、下次内部检查时间 |
+| POST | `/api/auto-scan/enable` | 保存设置并启用，JSON 沿用扫描参数，固定 `periods:["4h"]` / `interval_seconds:3600` |
+| POST | `/api/auto-scan/disable` | 停止未来调度 |
+| POST | `/api/internal/auto-scan` | 受保护的外部触发，快速返回任务 ID；使用 `/api/task` 轮询结果 |
+| GET | `/api/signals` | `limit`（1–100）、`offset`、exchange/market/period/pair/stage/date_from/date_to |
+| GET | `/api/scan-runs` | 最近任务记录，limit 最多 100 |
+
+内部触发始终要求环境变量 `AUTO_SCAN_TOKEN` 和 `Authorization: Bearer …`。未配置返回 503，错误/缺失 token 返回 401。Render 公网管理写接口和自动任务停止同样受保护；本地未设置 token 时仅 enable/disable 可直接使用。网页“管理凭证”只用于管理请求，不保存到 localStorage，不写入静态 JS。token 由管理员安全配置，**不要把值写入仓库、README、命令行参数或截图**。公开状态和历史可供访客读取。
+
+### Render Free 与长期运行
+
+当前 `render.yaml` 仍使用 Free，外部调度模式。**Free 15 分钟无请求会休眠，休眠/重启/部署会丢失 SQLite；不能保证持久历史、跨重启增量缓存或内部每小时调度。** [Render 官方限制](https://render.com/docs/free)。UI/API 会明确显示此限制，外部模式未配置 cron 时 `next_run=null`，不会虚构下一次运行时间。
+
+已准备 `.github/workflows/auto-scan.yml`：每小时 UTC 第 5 分钟，串行调用 `scripts/auto_scan.py`，健康检查唤醒服务、调用受保护入口、轮询完成；不复制策略。默认由仓库 variable `AUTO_SCAN_CRON_ENABLED` 控制，值为 `true` 才执行；需要 Actions secrets `AUTO_SCAN_BASE_URL`（本站 URL）和 `AUTO_SCAN_TOKEN`（与 Render 同值）。**仅上传 workflow 不代表已经开启线上定时任务。** GitHub schedule 可能延迟，公开仓库长期无活动时可能停用；不是精确时钟保证。[GitHub 官方说明](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+
+可靠的当前 SQLite 方案：先将 Web Service 升级为付费常驻实例、挂载持久磁盘，例如 `/var/data`，然后配置 `SCANNER_DB_PATH=/var/data/scanner.db`、`SCANNER_STORAGE_DURABLE=true`、`AUTO_SCAN_SCHEDULER_MODE=internal` 和管理 token，再启用自动扫描。`SCANNER_STORAGE_DURABLE` 仅为部署声明，**不能替代实际磁盘挂载**。持久磁盘下可由内部时钟每小时运行，无需 GitHub cron。付费操作需要账号支付方式及用户授权，项目不会自动升级计费。
+
+另一条路径是常驻/外部 cron + 外部持久数据库（需后续实现 PostgreSQL repository）。Render Cron 最低月费、且不能挂载持久磁盘，单独创建 cron 并不能解决 SQLite 保存问题，因此本次未擅自创建付费 Cron。[Render Cron 文档](https://render.com/docs/cronjobs)
+
+### 本阶段验证
+
+新增测试全部 mock 行情/HTTP：调度启停、同 K 线零请求、新 K 线增量、未收盘排除、重复保存/通知、静默基线、扩展交易对基线、SQLite 重启、失效、历史分页、成交额缓存、手动互斥、418 隔离、webhook 失败、固定 4H/小时参数、启停 API、token 验证及 Free 限制提示。沿用 `python -m pytest -q` 与现有 GitHub Tests workflow，CI 不请求真实交易所。

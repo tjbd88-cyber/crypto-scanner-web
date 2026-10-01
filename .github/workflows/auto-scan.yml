@@ -1,0 +1,27 @@
+name: Automatic scan trigger
+on:
+  schedule:
+    - cron: '5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: automatic-scan
+  cancel-in-progress: false
+jobs:
+  trigger:
+    # Explicit opt-in after durable storage and secrets have been configured.
+    if: vars.AUTO_SCAN_CRON_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'httpx>=0.28,<1'
+      - name: Check service and run protected scan
+        env:
+          AUTO_SCAN_BASE_URL: ${{ secrets.AUTO_SCAN_BASE_URL }}
+          AUTO_SCAN_TOKEN: ${{ secrets.AUTO_SCAN_TOKEN }}
+        run: python scripts/auto_scan.py
