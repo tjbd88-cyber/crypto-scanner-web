@@ -12,7 +12,7 @@
 <body>
   <header class="top"><div class="brand"><div class="logo">↗</div><div><strong>底部双转换选币器</strong><small>公开行情 · 已收盘 K 线 · 多周期扫描</small></div></div><span class="read-only">● 仅供技术研究</span></header>
   <main>
-    <section class="hero"><div><span class="eyebrow">BOTTOM REVERSAL SCANNER</span><h1>从连续回落中，寻找真正的转换时刻。</h1><p>观察空头动能衰减、KDJ 低位拐头，再确认平均K线翻阳与 SAR 翻多。所有判断只使用已收盘 K 线。</p></div><div class="hero-steps"><span>01 连续回落</span><b>→</b><span>02 动能衰减</span><b>→</b><span>03 双转换</span><b>→</b><span>04 启动</span></div></section>
+    <section class="hero"><div><span class="eyebrow">BOTTOM REVERSAL SCANNER</span><h1>从低位蓄势中，寻找双转换与启动。</h1><p>同时识别下跌反转、低位横盘蓄势和双转换后的二次启动准备。SAR 与平均K线在 7 根内共振；MACD、KDJ、布林带与成交量用于评分。所有判断只使用已收盘 K 线。</p></div><div class="hero-steps"><span>01 低位蓄势</span><b>→</b><span>02 空头衰竭</span><b>→</b><span>03 双转换</span><b>→</b><span>04 启动</span></div></section>
     <div class="workspace">
       <aside class="panel"><div class="panel-head"><h2>扫描设置</h2><span>默认 4H</span></div>
         <fieldset><legend>交易所</legend><div class="choices" id="exchanges"><label><input type="checkbox" value="binance"> Binance</label><label><input type="checkbox" value="okx"> OKX</label><label><input type="checkbox" value="gate"> Gate</label></div></fieldset>
@@ -38,15 +38,15 @@
           </div>
         </section>
         <section class="results-panel" aria-labelledby="results-heading">
-        <div class="section-head"><div><span class="eyebrow">SCAN RESULTS</span><h2 id="results-heading">形态候选</h2><p>点击币种查看真实 K 线与指标。“观察、临界”是预警；“双转换确认、启动”需同时满足前置回落与底部位置条件。</p></div><input id="search" type="search" placeholder="搜索币种、交易所、周期、阶段"></div>
+        <div class="section-head"><div><span class="eyebrow">SCAN RESULTS</span><h2 id="results-heading">形态候选</h2><p>点击币种查看真实 K 线与指标。7 根内双转换进入确认；8–10 根只作观察。辅助指标不足会降低评分，不会单独删除双转换候选。成交额门槛仍按原设置执行。</p></div><input id="search" type="search" placeholder="搜索币种、交易所、周期、阶段、形态"></div>
         <div class="stage-guide" aria-label="信号阶段说明">
-          <div class="stage-item"><span class="tag observe">观察</span><span>回落与底部初筛</span></div>
-          <div class="stage-item"><span class="tag critical">临界</span><span>MACD/KDJ 转强且接近转换</span></div>
-          <div class="stage-item"><span class="tag confirmed">双转换确认</span><span>两次翻转相距 ≤3 根</span></div>
-          <div class="stage-item"><span class="tag launched">启动</span><span>站上中轨且放量</span></div>
+          <div class="stage-item"><span class="tag observe">观察</span><span>低位蓄势 / 扩展观察</span></div>
+          <div class="stage-item"><span class="tag critical">临界</span><span>跌势减弱且接近转换</span></div>
+          <div class="stage-item"><span class="tag confirmed">双转换确认</span><span>两次翻转在 7 根窗口内</span></div>
+          <div class="stage-item"><span class="tag launched">启动</span><span>站上中轨且多项证据转强</span></div>
         </div>
-        <p class="table-hint">左右滑动表格，可查看评分、转换与判断依据。</p>
-        <div class="table-wrap"><table><thead><tr><th>币种 / 市场</th><th>周期</th><th>阶段</th><th>评分</th><th>回落</th><th>距低点</th><th>转换</th><th>依据</th></tr></thead><tbody id="results"><tr><td colspan="8" class="empty">暂无结果。开始扫描后，符合条件的真实行情将显示在这里。</td></tr></tbody></table></div>
+        <p class="table-hint">左右滑动查看形态、新鲜度与依据；评分可悬停查看加分项。0–2 根共振强，3–5 根正常，6–7 根为候选。强势启动另标注平台突破。</p>
+        <div class="table-wrap"><table><thead><tr><th>币种 / 市场</th><th>周期</th><th>阶段 / 形态</th><th>评分</th><th>前置结构</th><th>距低点</th><th>转换</th><th>依据</th></tr></thead><tbody id="results"><tr><td colspan="8" class="empty">暂无结果。开始扫描后，符合条件的真实行情将显示在这里。</td></tr></tbody></table></div>
         <details class="errors"><summary>请求与扫描错误 <b id="error-count">0</b></summary><ul id="error-list"></ul></details>
       </section>
       </section>
@@ -70,7 +70,7 @@
     </section>
     <section class="panel history-panel" id="signal-history" aria-labelledby="history-title">
       <div class="panel-head"><h2 id="history-title">最新信号 / 历史信号</h2><span id="history-count">0 条</span></div>
-      <p>观察与临界属于预警，双转换确认与启动属于现有策略的确认阶段。点击任一记录打开当前行情图，K 线时间为 UTC 开盘时间。</p>
+      <p>观察与临界属于预警。新规则为 7 根双转换共振；旧版历史仍保留并标记。点击任一记录打开当前行情图，K 线时间为 UTC 开盘时间。</p>
       <div class="history-filters">
         <label>交易所<select id="history-exchange"><option value="">全部</option><option value="binance">Binance</option><option value="okx">OKX</option><option value="gate">Gate</option></select></label>
         <label>市场<select id="history-market"><option value="">全部</option><option value="spot">现货</option><option value="perpetual">永续</option></select></label>
@@ -80,7 +80,7 @@
         <label>发现日期起 / UTC<input id="history-from" type="date"></label><label>发现日期止 / UTC<input id="history-to" type="date"></label>
         <button id="history-filter">筛选</button>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>币种 / 市场</th><th>周期 / 阶段</th><th>评分</th><th>K 线 / 发现时间</th><th>回落</th><th>SAR / HA 转换</th><th>原因</th></tr></thead><tbody id="history-results"><tr><td colspan="7" class="empty">尚无历史记录</td></tr></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>币种 / 市场</th><th>周期 / 阶段 / 形态</th><th>评分</th><th>K 线 / 发现时间</th><th>前置结构</th><th>SAR / HA 转换</th><th>原因</th></tr></thead><tbody id="history-results"><tr><td colspan="7" class="empty">尚无历史记录</td></tr></tbody></table></div>
       <div class="auto-actions"><button id="history-prev" class="secondary">上一页</button><span id="history-page">1</span><button id="history-next" class="secondary">下一页</button></div>
       <p id="history-error" role="alert"></p>
     </section>
